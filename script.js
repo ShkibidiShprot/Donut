@@ -20,7 +20,7 @@ let clickStartY = 0;
 
 // Apply Transform
 function applyTransform() {
-  board.style.transform = `translate(${currentX}px, ${currentY}px) scale(${scale})`;
+  board.style.transform = `translate3d(${currentX}px, ${currentY}px, 0) scale(${scale})`;
 }
 
 // Render Loop (Decoupled from Event Loop)
@@ -169,3 +169,4 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeOverl
 // Boot
 initBoard();
 window.addEventListener('resize', initBoard);
+
