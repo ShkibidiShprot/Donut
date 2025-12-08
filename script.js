@@ -1,61 +1,78 @@
+const CONFIG = {
+  zoomSensitivity: 0.01,
+  pinchZoomSpeed: 0.005,
+  dragSpeed: 1.0,
+  minScale: 0.25,
+  maxScale: 5.0
+};
+
 const board = document.getElementById('board');
 const overlay = document.getElementById('overlay');
 const overlayTitle = document.getElementById('overlayTitle');
 const overlayBody = document.getElementById('overlayBody');
+const boardStyle = board.style;
 
-// State
 let scale = 1;
-const MIN_SCALE = 0.2;
-const MAX_SCALE = 4.0;
 let currentX = 0;
 let currentY = 0;
 
-// Input State
 const evCache = [];
 let prevDiff = -1;
 let isDragging = false;
-let animationFrameId = null;
 let clickStartX = 0;
 let clickStartY = 0;
+let currentActiveItem = null;
 
-// Apply Transform
-function applyTransform() {
-  board.style.transform = `translate3d(${currentX}px, ${currentY}px, 0) scale(${scale})`;
+let needsUpdate = false;
+let animationFrameId = null;
+
+function initBoard() {
+  const viewportW = window.innerWidth;
+  const viewportH = window.innerHeight;
+  const boardCenterX = 1300;
+  const boardCenterY = 800;
+  
+  scale = viewportW < 768 ? 0.45 : 0.8;
+  currentX = (viewportW / 2) - (boardCenterX * scale);
+  currentY = (viewportH / 2) - (boardCenterY * scale);
+  
+  requestUpdate();
 }
 
-// Render Loop (Decoupled from Event Loop)
-function renderLoop() {
-  if (isDragging || evCache.length > 0) {
-    applyTransform();
+function requestUpdate() {
+  needsUpdate = true;
+  if (!animationFrameId) {
     animationFrameId = requestAnimationFrame(renderLoop);
   }
 }
 
-// Initialization
-function initBoard() {
-  const viewportW = window.innerWidth;
-  const viewportH = window.innerHeight;
-  // Board Size: 2600x1600
-  const boardCenterX = 1300;
-  const boardCenterY = 800;
+function renderLoop() {
+  if (needsUpdate) {
+    const x = Math.round(currentX * 100) / 100;
+    const y = Math.round(currentY * 100) / 100;
+    const s = Math.round(scale * 1000) / 1000;
+    boardStyle.transform = `translate3d(${x}px, ${y}px, 0) scale(${s})`;
+    needsUpdate = false;
+  }
   
-  scale = viewportW < 768 ? 0.5 : 0.8;
-
-  currentX = (viewportW / 2) - (boardCenterX * scale);
-  currentY = (viewportH / 2) - (boardCenterY * scale);
-  
-  applyTransform();
+  if (isDragging || evCache.length > 0) {
+    animationFrameId = requestAnimationFrame(renderLoop);
+  } else {
+    animationFrameId = null;
+  }
 }
 
-// --- Interaction Logic ---
-
 function removeEvent(ev) {
-  const index = evCache.findIndex((cachedEv) => cachedEv.pointerId === ev.pointerId);
-  if (index > -1) evCache.splice(index, 1);
+  for (let i = 0; i < evCache.length; i++) {
+    if (evCache[i].pointerId === ev.pointerId) {
+      evCache.splice(i, 1);
+      break;
+    }
+  }
 }
 
 board.addEventListener('pointerdown', (e) => {
-  if (e.target.closest('.item') && evCache.length === 0) {
+  if (evCache.length === 0 && e.target.closest('.item')) {
     clickStartX = e.clientX;
     clickStartY = e.clientY;
     return;
@@ -65,9 +82,7 @@ board.addEventListener('pointerdown', (e) => {
   board.setPointerCapture(e.pointerId);
   isDragging = true;
   board.classList.add('dragging');
-
-  if (animationFrameId) cancelAnimationFrame(animationFrameId);
-  animationFrameId = requestAnimationFrame(renderLoop);
+  requestUpdate();
 });
 
 board.addEventListener('pointermove', (e) => {
@@ -75,47 +90,44 @@ board.addEventListener('pointermove', (e) => {
   if (index > -1) evCache[index] = e;
 
   if (evCache.length === 2) {
-    // Pinch Zoom
-    const curDiff = Math.hypot(
-      evCache[0].clientX - evCache[1].clientX,
-      evCache[0].clientY - evCache[1].clientY
-    );
+    const xDiff = evCache[0].clientX - evCache[1].clientX;
+    const yDiff = evCache[0].clientY - evCache[1].clientY;
+    const curDiff = Math.hypot(xDiff, yDiff);
 
     if (prevDiff > 0) {
-      const zoomSensitivity = 0.005;
-      const diffChange = curDiff - prevDiff;
-      const zoomFactor = 1 + diffChange * zoomSensitivity;
+      const zoomFactor = 1 + (curDiff - prevDiff) * CONFIG.pinchZoomSpeed;
+      const newScale = Math.max(CONFIG.minScale, Math.min(scale * zoomFactor, CONFIG.maxScale));
       
       const midX = (evCache[0].clientX + evCache[1].clientX) / 2;
       const midY = (evCache[0].clientY + evCache[1].clientY) / 2;
 
-      const newScale = Math.min(Math.max(scale * zoomFactor, MIN_SCALE), MAX_SCALE);
-      
       const ratio = newScale / scale;
       currentX = midX - (midX - currentX) * ratio;
       currentY = midY - (midY - currentY) * ratio;
       
       scale = newScale;
+      requestUpdate();
     }
     prevDiff = curDiff;
+
   } else if (evCache.length === 1 && isDragging) {
-    // Pan
-    currentX += e.movementX;
-    currentY += e.movementY;
+    currentX += e.movementX * CONFIG.dragSpeed;
+    currentY += e.movementY * CONFIG.dragSpeed;
+    requestUpdate();
   }
 });
 
 function handlePointerUp(e) {
   removeEvent(e);
   if (evCache.length < 2) prevDiff = -1;
-  
   if (evCache.length === 0) {
     isDragging = false;
     board.classList.remove('dragging');
-    cancelAnimationFrame(animationFrameId);
-    applyTransform();
+    if (needsUpdate) renderLoop(); 
   }
-  board.releasePointerCapture(e.pointerId);
+  if (board.hasPointerCapture(e.pointerId)) {
+    board.releasePointerCapture(e.pointerId);
+  }
 }
 
 board.addEventListener('pointerup', handlePointerUp);
@@ -123,27 +135,27 @@ board.addEventListener('pointercancel', handlePointerUp);
 board.addEventListener('pointerout', handlePointerUp);
 board.addEventListener('pointerleave', handlePointerUp);
 
-// Mouse Wheel Zoom
 window.addEventListener('wheel', (e) => {
   if (overlay.classList.contains('show')) return;
   if (e.ctrlKey) e.preventDefault();
   
-  const zoomIntensity = 0.001;
-  const factor = 1 - e.deltaY * zoomIntensity;
-  let newScale = Math.min(Math.max(scale * factor, MIN_SCALE), MAX_SCALE);
+  const zoomFactor = 1 - e.deltaY * CONFIG.zoomSensitivity;
+  const newScale = Math.max(CONFIG.minScale, Math.min(scale * zoomFactor, CONFIG.maxScale));
 
   const ratio = newScale / scale;
   currentX = e.clientX - (e.clientX - currentX) * ratio;
   currentY = e.clientY - (e.clientY - currentY) * ratio;
   
   scale = newScale;
-  applyTransform();
+  requestUpdate();
 }, { passive: false });
 
-// Item Click
 function closeOverlay() {
   overlay.classList.remove('show');
-  document.querySelectorAll('.item.active').forEach(el => el.classList.remove('active'));
+  if (currentActiveItem) {
+    currentActiveItem.classList.remove('active');
+    currentActiveItem = null;
+  }
 }
 
 board.addEventListener('click', (e) => {
@@ -153,10 +165,13 @@ board.addEventListener('click', (e) => {
   const item = e.target.closest('.item');
   if (item) {
     e.stopPropagation();
-    document.querySelectorAll('.item.active').forEach(el => el.classList.remove('active'));
+    if (currentActiveItem && currentActiveItem !== item) {
+      currentActiveItem.classList.remove('active');
+    }
     item.classList.add('active');
+    currentActiveItem = item;
     overlayTitle.textContent = item.dataset.title || 'Note';
-    overlayBody.textContent = item.dataset.body || 'More details here.';
+    overlayBody.textContent = item.dataset.body || 'Details';
     overlay.classList.add('show');
   } else {
     closeOverlay();
@@ -164,9 +179,15 @@ board.addEventListener('click', (e) => {
 });
 
 overlay.addEventListener('click', closeOverlay);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeOverlay(); });
 
-// Boot
+let resizeTimeout;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(initBoard, 100);
+}, { passive: true });
+
+document.addEventListener('keydown', (e) => { 
+  if (e.key === 'Escape') closeOverlay(); 
+});
+
 initBoard();
-window.addEventListener('resize', initBoard);
-
