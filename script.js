@@ -1,20 +1,27 @@
 const CONFIG = {
   zoomSensitivity: 0.01,
   pinchZoomSpeed: 0.005,
-  dragSpeed: 1.0,
   minScale: 0.25,
   maxScale: 5.0
 };
 
+// --- DOM ---
 const board = document.getElementById('board');
 const overlay = document.getElementById('overlay');
 const overlayTitle = document.getElementById('overlayTitle');
 const overlayBody = document.getElementById('overlayBody');
 const boardStyle = board.style;
 
+// --- STATE ---
 let scale = 1;
 let currentX = 0;
 let currentY = 0;
+
+// Anchor Drag State
+let dragStartX = 0;
+let dragStartY = 0;
+let initialBoardX = 0;
+let initialBoardY = 0;
 
 const evCache = [];
 let prevDiff = -1;
@@ -32,7 +39,7 @@ function initBoard() {
   const boardCenterX = 1300;
   const boardCenterY = 800;
   
-  scale = viewportW < 768 ? 0.45 : 0.8;
+  scale = viewportW < 768 ? 0.35 : 0.7; // Start slightly zoomed out to see more
   currentX = (viewportW / 2) - (boardCenterX * scale);
   currentY = (viewportH / 2) - (boardCenterY * scale);
   
@@ -41,15 +48,13 @@ function initBoard() {
 
 function requestUpdate() {
   needsUpdate = true;
-  if (!animationFrameId) {
-    animationFrameId = requestAnimationFrame(renderLoop);
-  }
+  if (!animationFrameId) animationFrameId = requestAnimationFrame(renderLoop);
 }
 
 function renderLoop() {
   if (needsUpdate) {
-    const x = Math.round(currentX * 100) / 100;
-    const y = Math.round(currentY * 100) / 100;
+    const x = Math.round(currentX * 10) / 10;
+    const y = Math.round(currentY * 10) / 10;
     const s = Math.round(scale * 1000) / 1000;
     boardStyle.transform = `translate3d(${x}px, ${y}px, 0) scale(${s})`;
     needsUpdate = false;
@@ -71,25 +76,34 @@ function removeEvent(ev) {
   }
 }
 
+// 1. POINTER DOWN
 board.addEventListener('pointerdown', (e) => {
   if (evCache.length === 0 && e.target.closest('.item')) {
     clickStartX = e.clientX;
     clickStartY = e.clientY;
     return;
   }
-
   evCache.push(e);
   board.setPointerCapture(e.pointerId);
   isDragging = true;
   board.classList.add('dragging');
+
+  // ANCHOR LOGIC
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  initialBoardX = currentX;
+  initialBoardY = currentY;
+
   requestUpdate();
 });
 
+// 2. POINTER MOVE
 board.addEventListener('pointermove', (e) => {
   const index = evCache.findIndex((cachedEv) => cachedEv.pointerId === e.pointerId);
   if (index > -1) evCache[index] = e;
 
   if (evCache.length === 2) {
+    // Pinch Zoom
     const xDiff = evCache[0].clientX - evCache[1].clientX;
     const yDiff = evCache[0].clientY - evCache[1].clientY;
     const curDiff = Math.hypot(xDiff, yDiff);
@@ -105,18 +119,25 @@ board.addEventListener('pointermove', (e) => {
       currentX = midX - (midX - currentX) * ratio;
       currentY = midY - (midY - currentY) * ratio;
       
+      initialBoardX = currentX;
+      initialBoardY = currentY;
+      dragStartX = midX; 
+      dragStartY = midY;
+
       scale = newScale;
       requestUpdate();
     }
     prevDiff = curDiff;
 
   } else if (evCache.length === 1 && isDragging) {
-    currentX += e.movementX * CONFIG.dragSpeed;
-    currentY += e.movementY * CONFIG.dragSpeed;
+    // Anchor Pan
+    currentX = initialBoardX + (e.clientX - dragStartX);
+    currentY = initialBoardY + (e.clientY - dragStartY);
     requestUpdate();
   }
 });
 
+// 3. POINTER UP
 function handlePointerUp(e) {
   removeEvent(e);
   if (evCache.length < 2) prevDiff = -1;
@@ -125,9 +146,7 @@ function handlePointerUp(e) {
     board.classList.remove('dragging');
     if (needsUpdate) renderLoop(); 
   }
-  if (board.hasPointerCapture(e.pointerId)) {
-    board.releasePointerCapture(e.pointerId);
-  }
+  if (board.hasPointerCapture(e.pointerId)) board.releasePointerCapture(e.pointerId);
 }
 
 board.addEventListener('pointerup', handlePointerUp);
@@ -135,6 +154,7 @@ board.addEventListener('pointercancel', handlePointerUp);
 board.addEventListener('pointerout', handlePointerUp);
 board.addEventListener('pointerleave', handlePointerUp);
 
+// 4. WHEEL
 window.addEventListener('wheel', (e) => {
   if (overlay.classList.contains('show')) return;
   if (e.ctrlKey) e.preventDefault();
@@ -145,11 +165,17 @@ window.addEventListener('wheel', (e) => {
   const ratio = newScale / scale;
   currentX = e.clientX - (e.clientX - currentX) * ratio;
   currentY = e.clientY - (e.clientY - currentY) * ratio;
-  
   scale = newScale;
+  
+  initialBoardX = currentX;
+  initialBoardY = currentY;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+
   requestUpdate();
 }, { passive: false });
 
+// 5. CLICK
 function closeOverlay() {
   overlay.classList.remove('show');
   if (currentActiveItem) {
@@ -171,7 +197,8 @@ board.addEventListener('click', (e) => {
     item.classList.add('active');
     currentActiveItem = item;
     overlayTitle.textContent = item.dataset.title || 'Note';
-    overlayBody.textContent = item.dataset.body || 'Details';
+    // Support basic HTML in body (for line breaks)
+    overlayBody.innerHTML = (item.dataset.body || '').replace(/\n/g, '<br>'); 
     overlay.classList.add('show');
   } else {
     closeOverlay();
@@ -186,8 +213,6 @@ window.addEventListener('resize', () => {
   resizeTimeout = setTimeout(initBoard, 100);
 }, { passive: true });
 
-document.addEventListener('keydown', (e) => { 
-  if (e.key === 'Escape') closeOverlay(); 
-});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeOverlay(); });
 
 initBoard();
