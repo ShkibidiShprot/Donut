@@ -1,218 +1,171 @@
-const CONFIG = {
-  zoomSensitivity: 0.01,
-  pinchZoomSpeed: 0.005,
-  minScale: 0.25,
-  maxScale: 5.0
-};
+var C = { zoom: .01, pinch: .005, min: .25, max: 5 };
+var board = document.getElementById('board');
+var overlay = document.getElementById('overlay');
+var oTitle = document.getElementById('overlayTitle');
+var oBody = document.getElementById('overlayBody');
 
-// --- DOM ---
-const board = document.getElementById('board');
-const overlay = document.getElementById('overlay');
-const overlayTitle = document.getElementById('overlayTitle');
-const overlayBody = document.getElementById('overlayBody');
-const boardStyle = board.style;
+var scale = 1, cx = 0, cy = 0;
+var dx = 0, dy = 0, ix = 0, iy = 0;
+var ev = [], pDiff = -1, drag = false;
+var clkX = 0, clkY = 0, active = null;
+var raf = null, needUp = false;
 
-// --- STATE ---
-let scale = 1;
-let currentX = 0;
-let currentY = 0;
+var items = [];
+var vw = 0, vh = 0;
+var visRaf = null;
 
-// Anchor Drag State
-let dragStartX = 0;
-let dragStartY = 0;
-let initialBoardX = 0;
-let initialBoardY = 0;
-
-const evCache = [];
-let prevDiff = -1;
-let isDragging = false;
-let clickStartX = 0;
-let clickStartY = 0;
-let currentActiveItem = null;
-
-let needsUpdate = false;
-let animationFrameId = null;
-
-function initBoard() {
-  const viewportW = window.innerWidth;
-  const viewportH = window.innerHeight;
-  const boardCenterX = 1300;
-  const boardCenterY = 800;
-  
-  scale = viewportW < 768 ? 0.35 : 0.7; // Start slightly zoomed out to see more
-  currentX = (viewportW / 2) - (boardCenterX * scale);
-  currentY = (viewportH / 2) - (boardCenterY * scale);
-  
-  requestUpdate();
+function init() {
+  vw = window.innerWidth;
+  vh = window.innerHeight;
+  scale = vw < 768 ? .35 : .7;
+  cx = (vw / 2) - (1300 * scale);
+  cy = (vh / 2) - (800 * scale);
+  items = board.querySelectorAll('.item');
+  upd();
+  checkVis();
 }
 
-function requestUpdate() {
-  needsUpdate = true;
-  if (!animationFrameId) animationFrameId = requestAnimationFrame(renderLoop);
+function upd() {
+  needUp = true;
+  if (!raf) raf = requestAnimationFrame(loop);
 }
 
-function renderLoop() {
-  if (needsUpdate) {
-    const x = Math.round(currentX * 10) / 10;
-    const y = Math.round(currentY * 10) / 10;
-    const s = Math.round(scale * 1000) / 1000;
-    boardStyle.transform = `translate3d(${x}px, ${y}px, 0) scale(${s})`;
-    needsUpdate = false;
+function loop() {
+  if (needUp) {
+    board.style.transform = 'translate3d(' + (cx | 0) + 'px,' + (cy | 0) + 'px,0) scale(' + scale.toFixed(3) + ')';
+    needUp = false;
   }
-  
-  if (isDragging || evCache.length > 0) {
-    animationFrameId = requestAnimationFrame(renderLoop);
-  } else {
-    animationFrameId = null;
-  }
+  raf = (drag || ev.length) ? requestAnimationFrame(loop) : null;
 }
 
-function removeEvent(ev) {
-  for (let i = 0; i < evCache.length; i++) {
-    if (evCache[i].pointerId === ev.pointerId) {
-      evCache.splice(i, 1);
-      break;
+function checkVis() {
+  if (visRaf) return;
+  visRaf = requestAnimationFrame(function() {
+    visRaf = null;
+    var pad = 100;
+    for (var i = 0; i < items.length; i++) {
+      var el = items[i];
+      var x = parseFloat(el.style.left) || 0;
+      var y = parseFloat(el.style.top) || 0;
+      var w = el.offsetWidth || 200;
+      var h = el.offsetHeight || 200;
+
+      var sx = cx + x * scale;
+      var sy = cy + y * scale;
+      var sw = w * scale;
+      var sh = h * scale;
+
+      var vis = !(sx + sw < -pad || sx > vw + pad || sy + sh < -pad || sy > vh + pad);
+
+      if (vis) {
+        if (el.classList.contains('offscreen')) el.classList.remove('offscreen');
+      } else {
+        if (!el.classList.contains('offscreen')) el.classList.add('offscreen');
+      }
     }
+  });
+}
+
+function rmEv(e) {
+  for (var i = 0; i < ev.length; i++) {
+    if (ev[i].pointerId === e.pointerId) { ev.splice(i, 1); break; }
   }
 }
 
-// 1. POINTER DOWN
-board.addEventListener('pointerdown', (e) => {
-  if (evCache.length === 0 && e.target.closest('.item')) {
-    clickStartX = e.clientX;
-    clickStartY = e.clientY;
-    return;
-  }
-  evCache.push(e);
+board.addEventListener('pointerdown', function(e) {
+  if (!ev.length && e.target.closest('.item')) { clkX = e.clientX; clkY = e.clientY; return; }
+  ev.push(e);
   board.setPointerCapture(e.pointerId);
-  isDragging = true;
-  board.classList.add('dragging');
-
-  // ANCHOR LOGIC
-  dragStartX = e.clientX;
-  dragStartY = e.clientY;
-  initialBoardX = currentX;
-  initialBoardY = currentY;
-
-  requestUpdate();
+  drag = true;
+  board.className = 'board dragging';
+  dx = e.clientX; dy = e.clientY;
+  ix = cx; iy = cy;
+  upd();
 });
 
-// 2. POINTER MOVE
-board.addEventListener('pointermove', (e) => {
-  const index = evCache.findIndex((cachedEv) => cachedEv.pointerId === e.pointerId);
-  if (index > -1) evCache[index] = e;
+board.addEventListener('pointermove', function(e) {
+  var i = -1;
+  for (var j = 0; j < ev.length; j++) if (ev[j].pointerId === e.pointerId) { i = j; break; }
+  if (i > -1) ev[i] = e;
 
-  if (evCache.length === 2) {
-    // Pinch Zoom
-    const xDiff = evCache[0].clientX - evCache[1].clientX;
-    const yDiff = evCache[0].clientY - evCache[1].clientY;
-    const curDiff = Math.hypot(xDiff, yDiff);
-
-    if (prevDiff > 0) {
-      const zoomFactor = 1 + (curDiff - prevDiff) * CONFIG.pinchZoomSpeed;
-      const newScale = Math.max(CONFIG.minScale, Math.min(scale * zoomFactor, CONFIG.maxScale));
-      
-      const midX = (evCache[0].clientX + evCache[1].clientX) / 2;
-      const midY = (evCache[0].clientY + evCache[1].clientY) / 2;
-
-      const ratio = newScale / scale;
-      currentX = midX - (midX - currentX) * ratio;
-      currentY = midY - (midY - currentY) * ratio;
-      
-      initialBoardX = currentX;
-      initialBoardY = currentY;
-      dragStartX = midX; 
-      dragStartY = midY;
-
-      scale = newScale;
-      requestUpdate();
+  if (ev.length === 2) {
+    var d = Math.hypot(ev[0].clientX - ev[1].clientX, ev[0].clientY - ev[1].clientY);
+    if (pDiff > 0) {
+      var z = 1 + (d - pDiff) * C.pinch;
+      var ns = Math.max(C.min, Math.min(scale * z, C.max));
+      var mx = (ev[0].clientX + ev[1].clientX) / 2;
+      var my = (ev[0].clientY + ev[1].clientY) / 2;
+      var r = ns / scale;
+      cx = mx - (mx - cx) * r;
+      cy = my - (my - cy) * r;
+      ix = cx; iy = cy; dx = mx; dy = my;
+      scale = ns;
+      upd();
+      checkVis();
     }
-    prevDiff = curDiff;
-
-  } else if (evCache.length === 1 && isDragging) {
-    // Anchor Pan
-    currentX = initialBoardX + (e.clientX - dragStartX);
-    currentY = initialBoardY + (e.clientY - dragStartY);
-    requestUpdate();
+    pDiff = d;
+  } else if (ev.length === 1 && drag) {
+    cx = ix + (e.clientX - dx);
+    cy = iy + (e.clientY - dy);
+    upd();
+    checkVis();
   }
 });
 
-// 3. POINTER UP
-function handlePointerUp(e) {
-  removeEvent(e);
-  if (evCache.length < 2) prevDiff = -1;
-  if (evCache.length === 0) {
-    isDragging = false;
-    board.classList.remove('dragging');
-    if (needsUpdate) renderLoop(); 
-  }
+function pUp(e) {
+  rmEv(e);
+  if (ev.length < 2) pDiff = -1;
+  if (!ev.length) { drag = false; board.className = 'board'; checkVis(); }
   if (board.hasPointerCapture(e.pointerId)) board.releasePointerCapture(e.pointerId);
 }
 
-board.addEventListener('pointerup', handlePointerUp);
-board.addEventListener('pointercancel', handlePointerUp);
-board.addEventListener('pointerout', handlePointerUp);
-board.addEventListener('pointerleave', handlePointerUp);
+board.addEventListener('pointerup', pUp);
+board.addEventListener('pointercancel', pUp);
 
-// 4. WHEEL
-window.addEventListener('wheel', (e) => {
-  if (overlay.classList.contains('show')) return;
+window.addEventListener('wheel', function(e) {
+  if (overlay.className.indexOf('show') > -1) return;
   if (e.ctrlKey) e.preventDefault();
-  
-  const zoomFactor = 1 - e.deltaY * CONFIG.zoomSensitivity;
-  const newScale = Math.max(CONFIG.minScale, Math.min(scale * zoomFactor, CONFIG.maxScale));
-
-  const ratio = newScale / scale;
-  currentX = e.clientX - (e.clientX - currentX) * ratio;
-  currentY = e.clientY - (e.clientY - currentY) * ratio;
-  scale = newScale;
-  
-  initialBoardX = currentX;
-  initialBoardY = currentY;
-  dragStartX = e.clientX;
-  dragStartY = e.clientY;
-
-  requestUpdate();
+  var z = 1 - e.deltaY * C.zoom;
+  var ns = Math.max(C.min, Math.min(scale * z, C.max));
+  var r = ns / scale;
+  cx = e.clientX - (e.clientX - cx) * r;
+  cy = e.clientY - (e.clientY - cy) * r;
+  scale = ns;
+  ix = cx; iy = cy; dx = e.clientX; dy = e.clientY;
+  upd();
+  checkVis();
 }, { passive: false });
 
-// 5. CLICK
-function closeOverlay() {
-  overlay.classList.remove('show');
-  if (currentActiveItem) {
-    currentActiveItem.classList.remove('active');
-    currentActiveItem = null;
-  }
+function close() {
+  overlay.className = 'overlay';
+  if (active) { active.classList.remove('active'); active = null; }
 }
 
-board.addEventListener('click', (e) => {
-  const dist = Math.hypot(e.clientX - clickStartX, e.clientY - clickStartY);
-  if (dist > 5) return;
-
-  const item = e.target.closest('.item');
-  if (item) {
+board.addEventListener('click', function(e) {
+  if (Math.hypot(e.clientX - clkX, e.clientY - clkY) > 5) return;
+  var it = e.target.closest('.item');
+  if (it) {
     e.stopPropagation();
-    if (currentActiveItem && currentActiveItem !== item) {
-      currentActiveItem.classList.remove('active');
-    }
-    item.classList.add('active');
-    currentActiveItem = item;
-    overlayTitle.textContent = item.dataset.title || 'Note';
-    // Support basic HTML in body (for line breaks)
-    overlayBody.innerHTML = (item.dataset.body || '').replace(/\n/g, '<br>'); 
-    overlay.classList.add('show');
-  } else {
-    closeOverlay();
-  }
+    if (active && active !== it) active.classList.remove('active');
+    it.classList.add('active');
+    active = it;
+    oTitle.textContent = it.dataset.title || 'Note';
+    oBody.innerHTML = (it.dataset.body || '').replace(/\n/g, '<br>');
+    overlay.className = 'overlay show';
+  } else close();
 });
 
-overlay.addEventListener('click', closeOverlay);
+overlay.addEventListener('click', close);
+document.addEventListener('keydown', function(e) { if (e.key === 'Escape') close(); });
 
-let resizeTimeout;
-window.addEventListener('resize', () => {
-  clearTimeout(resizeTimeout);
-  resizeTimeout = setTimeout(initBoard, 100);
+var rt;
+window.addEventListener('resize', function() {
+  clearTimeout(rt);
+  rt = setTimeout(function() {
+    vw = window.innerWidth;
+    vh = window.innerHeight;
+    init();
+  }, 100);
 }, { passive: true });
 
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeOverlay(); });
-
-initBoard();
+init();
